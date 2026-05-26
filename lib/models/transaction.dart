@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:cloud_firestore/cloud_firestore.dart' hide Transaction;
 import 'package:hive/hive.dart';
 
 part 'transaction.g.dart';
@@ -113,22 +114,24 @@ class Transaction {
         'amount': amount,
         'type': type.index,
         'category': categoryId,
-        'date': date.toIso8601String(),
+        'date': Timestamp.fromDate(date),
         'avatarInitials': avatarInitials,
         'avatarColor': avatarColorValue,
-        'updatedAt': updatedAt.toIso8601String(),
+        'updatedAt': Timestamp.fromDate(updatedAt),
       };
 
   factory Transaction.fromMap(Map<String, dynamic> map) {
     DateTime parsedDate;
-    if (map['date'] != null && map['date'] is String) {
-      parsedDate = DateTime.parse(map['date']);
+    if (map['date'] is Timestamp) {
+      parsedDate = (map['date'] as Timestamp).toDate();
     } else {
-      parsedDate = DateTime.now(); // Fallback
+      parsedDate = DateTime.parse(map['date']);
     }
 
     DateTime parsedUpdatedAt;
-    if (map['updatedAt'] != null && map['updatedAt'] is String) {
+    if (map['updatedAt'] is Timestamp) {
+      parsedUpdatedAt = (map['updatedAt'] as Timestamp).toDate();
+    } else if (map['updatedAt'] != null) {
       parsedUpdatedAt = DateTime.parse(map['updatedAt']);
     } else {
       parsedUpdatedAt = parsedDate; // Fallback
