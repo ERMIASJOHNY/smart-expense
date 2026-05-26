@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:provider/provider.dart';
+import 'package:firebase_core/firebase_core.dart';
 import 'theme/app_theme.dart';
 import 'providers/theme_provider.dart';
 import 'providers/auth_provider.dart';
@@ -23,16 +25,6 @@ import 'models/contact.dart';
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Firebase initialization temporarily bypassed to avoid debugger exceptions.
-  // try {
-  //   await Firebase.initializeApp(
-  //     options: DefaultFirebaseOptions.currentPlatform,
-  //   );
-  //   debugPrint('Firebase initialized successfully');
-  // } catch (e) {
-  //   debugPrint('Firebase failed to initialize (offline mode): $e');
-  // }
-
   // Start orientation lock, but don't strictly await it if it delays startup
   SystemChrome.setPreferredOrientations([
     DeviceOrientation.portraitUp,
@@ -51,15 +43,33 @@ void main() async {
     Hive.openBox<Contact>('contacts_cache'),
   ]);
 
+  // 2. Initialize Firebase
+  try {
+    if (kIsWeb) {
+      await Firebase.initializeApp(
+        options: const FirebaseOptions(
+          apiKey: "AIzaSyBO1w4nPI9vI5yB3zSA82GG3RRf4F97jt4",
+          authDomain: "smart-expense-ad392.firebaseapp.com",
+          projectId: "smart-expense-ad392",
+          storageBucket: "smart-expense-ad392.firebasestorage.app",
+          messagingSenderId: "965814387806",
+          appId: "1:965814387806:web:b7be097a375f578fe720cf",
+        ),
+      );
+    } else {
+      await Firebase.initializeApp().timeout(const Duration(seconds: 5));
+    }
+  } catch (e) {
+    debugPrint('Firebase initialization failed or timed out: $e');
+    debugPrint('The app will continue in offline mode (Hive cache only).');
+  }
+
   runApp(
     MultiProvider(
       providers: [
         ChangeNotifierProvider(create: (_) => ThemeProvider()),
         ChangeNotifierProvider(create: (_) => AuthProvider()),
-        ChangeNotifierProxyProvider<AuthProvider, ExpenseProvider>(
-          create: (_) => ExpenseProvider(),
-          update: (_, auth, expense) => expense!..updateUser(auth.userEmail),
-        ),
+        ChangeNotifierProvider(create: (_) => ExpenseProvider()),
       ],
       child: const MyApp(),
     ),
