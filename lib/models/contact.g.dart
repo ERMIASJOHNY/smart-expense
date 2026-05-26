@@ -1,50 +1,154 @@
-// GENERATED CODE - DO NOT MODIFY BY HAND
+import 'package:flutter/material.dart';
+import 'package:cloud_firestore/cloud_firestore.dart' hide Transaction;
+import 'package:hive/hive.dart';
 
-part of 'contact.dart';
+part 'transaction.g.dart';
 
-// **************************************************************************
-// TypeAdapterGenerator
-// **************************************************************************
+@HiveType(typeId: 2)
+enum TransactionType { 
+  @HiveField(0)
+  income, 
+  @HiveField(1)
+  expense 
+}
 
-class ContactAdapter extends TypeAdapter<Contact> {
-  @override
-  final int typeId = 3;
+@HiveType(typeId: 1)
+class PaymentCategory {
+  @HiveField(0)
+  final String id;
+  @HiveField(1)
+  final String name;
+  @HiveField(2)
+  final int iconCode;
+  @HiveField(3)
+  final int colorValue;
 
-  @override
-  Contact read(BinaryReader reader) {
-    final numOfFields = reader.readByte();
-    final fields = <int, dynamic>{
-      for (int i = 0; i < numOfFields; i++) reader.readByte(): reader.read(),
-    };
-    return Contact(
-      name: fields[0] as String,
-      sub: fields[1] as String,
-      initials: fields[2] as String,
-      colorValue: fields[3] as int,
-    );
-  }
+  IconData get icon => IconData(iconCode, fontFamily: 'MaterialIcons');
+  Color get color => Color(colorValue);
 
-  @override
-  void write(BinaryWriter writer, Contact obj) {
-    writer
-      ..writeByte(4)
-      ..writeByte(0)
-      ..write(obj.name)
-      ..writeByte(1)
-      ..write(obj.sub)
-      ..writeByte(2)
-      ..write(obj.initials)
-      ..writeByte(3)
-      ..write(obj.colorValue);
-  }
+  const PaymentCategory({
+    required this.id,
+    required this.name,
+    required this.iconCode,
+    required this.colorValue,
+  });
 
-  @override
-  int get hashCode => typeId.hashCode;
+  // Keep these for UI convenience if needed
+  static PaymentCategory create({
+    required String id,
+    required String name,
+    required IconData icon,
+    required Color color,
+  }) => PaymentCategory(
+    id: id,
+    name: name,
+    iconCode: icon.codePoint,
+    colorValue: color.toARGB32(),
+  );
+
+  Map<String, dynamic> toMap() => {
+        'id': id,
+        'name': name,
+        'icon': iconCode,
+        'color': colorValue,
+      };
+
+  factory PaymentCategory.fromMap(Map<String, dynamic> map) => PaymentCategory(
+        id: map['id'],
+        name: map['name'],
+        iconCode: map['icon'],
+        colorValue: map['color'],
+      );
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
-      other is ContactAdapter &&
+      other is PaymentCategory &&
           runtimeType == other.runtimeType &&
-          typeId == other.typeId;
+          id == other.id;
+
+  @override
+  int get hashCode => id.hashCode;
 }
+
+@HiveType(typeId: 0)
+class Transaction {
+  @HiveField(0)
+  final String id;
+  @HiveField(1)
+  final String title;
+  @HiveField(2)
+  final String? subtitle;
+  @HiveField(3)
+  final double amount;
+  @HiveField(4)
+  final TransactionType type;
+  @HiveField(5)
+  final String categoryId; // Store ID to link with provider
+  @HiveField(6)
+  final DateTime date;
+  @HiveField(7)
+  final String? avatarInitials;
+  @HiveField(8)
+  final int? avatarColorValue;
+  @HiveField(9)
+  final DateTime updatedAt;
+
+  Transaction({
+    required this.id,
+    required this.title,
+    this.subtitle,
+    required this.amount,
+    required this.type,
+    required this.categoryId,
+    required this.date,
+    this.avatarInitials,
+    this.avatarColorValue,
+    required this.updatedAt,
+  });
+
+  Map<String, dynamic> toMap() => {
+        'id': id,
+        'title': title,
+        'subtitle': subtitle,
+        'amount': amount,
+        'type': type.index,
+        'category': categoryId,
+        'date': Timestamp.fromDate(date),
+        'avatarInitials': avatarInitials,
+        'avatarColor': avatarColorValue,
+        'updatedAt': Timestamp.fromDate(updatedAt),
+      };
+
+  factory Transaction.fromMap(Map<String, dynamic> map) {
+    DateTime parsedDate;
+    if (map['date'] is Timestamp) {
+      parsedDate = (map['date'] as Timestamp).toDate();
+    } else {
+      parsedDate = DateTime.parse(map['date']);
+    }
+
+    DateTime parsedUpdatedAt;
+    if (map['updatedAt'] is Timestamp) {
+      parsedUpdatedAt = (map['updatedAt'] as Timestamp).toDate();
+    } else if (map['updatedAt'] != null) {
+      parsedUpdatedAt = DateTime.parse(map['updatedAt']);
+    } else {
+      parsedUpdatedAt = parsedDate; // Fallback
+    }
+
+    return Transaction(
+      id: map['id'],
+      title: map['title'],
+      subtitle: map['subtitle'],
+      amount: map['amount'],
+      type: TransactionType.values[map['type']],
+      categoryId: map['category'],
+      date: parsedDate,
+      avatarInitials: map['avatarInitials'],
+      avatarColorValue: map['avatarColor'],
+      updatedAt: parsedUpdatedAt,
+    );
+  }
+}
+
