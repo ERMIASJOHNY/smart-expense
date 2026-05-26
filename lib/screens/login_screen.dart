@@ -16,35 +16,22 @@ class _LoginScreenState extends State<LoginScreen> {
   final _formKey = GlobalKey<FormState>();
   final _emailCtrl = TextEditingController();
   final _passCtrl = TextEditingController();
-  bool _obscurePassword = true;
-
-  @override
-  void dispose() {
-    _emailCtrl.dispose();
-    _passCtrl.dispose();
-    super.dispose();
-  }
 
   void _login() async {
     if (_formKey.currentState?.validate() ?? false) {
       final authProvider = Provider.of<AuthProvider>(context, listen: false);
-      final error = await authProvider.login(
+      final success = await authProvider.login(
         _emailCtrl.text.trim(),
         _passCtrl.text.trim(),
       );
 
       if (!mounted) return;
 
-      if (error == null) {
+      if (success) {
         Navigator.pushReplacementNamed(context, '/');
       } else {
-        // Clear password on error as best practice
-        _passCtrl.clear();
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(error),
-            backgroundColor: Colors.redAccent,
-          ),
+          const SnackBar(content: Text('Invalid email or password')),
         );
       }
     }
@@ -124,6 +111,7 @@ class _LoginScreenState extends State<LoginScreen> {
                     ),
                     validator: (val) {
                       if (val == null || val.isEmpty) return 'Enter an email';
+                      // Basic email validation regex
                       if (!RegExp(r'^[\w-\.]+@([\w-]+\.)+[\w-]{2,4}$')
                           .hasMatch(val)) {
                         return 'Enter a valid email';
@@ -136,7 +124,7 @@ class _LoginScreenState extends State<LoginScreen> {
                   // Password Field
                   TextFormField(
                     controller: _passCtrl,
-                    obscureText: _obscurePassword,
+                    obscureText: true,
                     style: TextStyle(color: AppTheme.getTextColor(context)),
                     decoration: InputDecoration(
                       hintText: 'Password',
@@ -144,16 +132,6 @@ class _LoginScreenState extends State<LoginScreen> {
                           TextStyle(color: AppTheme.getTextGreyColor(context)),
                       prefixIcon: const Icon(Icons.lock_outline,
                           color: AppColors.primary),
-                      suffixIcon: IconButton(
-                        icon: Icon(
-                          _obscurePassword
-                              ? Icons.visibility_outlined
-                              : Icons.visibility_off_outlined,
-                          color: AppColors.primary,
-                        ),
-                        onPressed: () => setState(
-                            () => _obscurePassword = !_obscurePassword),
-                      ),
                       filled: true,
                       fillColor:
                           isDark ? AppColors.darkCardLight : Colors.white,
@@ -223,7 +201,7 @@ class _LoginScreenState extends State<LoginScreen> {
                     ),
                   ),
                   const SizedBox(height: 16),
-                  TextButton(
+                   TextButton(
                     onPressed: () => Navigator.pushNamed(context, '/signup'),
                     child: const Text(
                       'Don\'t have an account? Register',
