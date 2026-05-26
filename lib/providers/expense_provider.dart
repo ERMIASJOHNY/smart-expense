@@ -1,13 +1,15 @@
-import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
-import 'package:hive/hive.dart';
-import 'package:firebase_core/firebase_core.dart';
 import 'package:cloud_firestore/cloud_firestore.dart' hide Transaction;
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:hive/hive.dart';
 import '../models/transaction.dart';
 import '../models/contact.dart';
 
 class ExpenseProvider extends ChangeNotifier {
+  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  final FirebaseAuth _auth = FirebaseAuth.instance;
+  
   late Box<Transaction> _transactionBox;
   late Box<Contact> _contactBox;
 
@@ -29,124 +31,153 @@ class ExpenseProvider extends ChangeNotifier {
   List<Transaction> _transactions = [];
   List<Contact> _contacts = [];
 
-  String? _currentUserEmail;
-  StreamSubscription? _transactionsSub;
-  StreamSubscription? _contactsSub;
-
   ExpenseProvider() {
     _transactionBox = Hive.box<Transaction>('transactions_cache');
     _contactBox = Hive.box<Contact>('contacts_cache');
-    _loadData();
-  }
 
-  void updateUser(String? email) {
-    if (_currentUserEmail == email) return;
-    _currentUserEmail = email;
-
-    _transactionsSub?.cancel();
-    _contactsSub?.cancel();
-
-    if (email != null) {
-      _setupFirestoreSync(email);
-    } else {
-      _loadData();
-    }
-  }
-
-  void _setupFirestoreSync(String email) {
-    if (Firebase.apps.isEmpty) {
-      _loadData();
-      return;
-    }
-    try {
-      final db = FirebaseFirestore.instance;
-
-      _transactionsSub = db
-          .collection('users')
-          .doc(email)
-          .collection('transactions')
-          .snapshots()
-          .listen((querySnap) async {
-        final List<Transaction> syncedList = [];
-        for (var doc in querySnap.docs) {
-          try {
-            final t = Transaction.fromMap(doc.data());
-            syncedList.add(t);
-          } catch (e) {
-            debugPrint('Error parsing transaction from Firestore: $e');
-          }
-        }
-
-        syncedList.sort((a, b) => b.date.compareTo(a.date));
-        _transactions = syncedList;
-
-        await _transactionBox.clear();
-        for (var t in syncedList) {
-          await _transactionBox.put(t.id, t);
-        }
-
+    _auth.authStateChanges().listen((user) {
+      if (user != null) {
+        _loadData(user.uid);
+      } else {
+        _transactions = [];
+        _contacts = [];
         notifyListeners();
-      }, onError: (err) {
-        debugPrint('Firestore transactions stream error: $err');
-        _loadData();
-      });
-
-      _contactsSub = db
-          .collection('users')
-          .doc(email)
-          .collection('contacts')
-          .snapshots()
-          .listen((querySnap) async {
-        final List<Contact> syncedList = [];
-        for (var doc in querySnap.docs) {
-          try {
-            final c = Contact.fromMap(doc.data());
-            syncedList.add(c);
-          } catch (e) {
-            debugPrint('Error parsing contact from Firestore: $e');
-          }
-        }
-
-        _contacts = syncedList;
-
-        await _contactBox.clear();
-        for (var c in syncedList) {
-          await _contactBox.put(c.name.toLowerCase(), c);
-        }
-
-        notifyListeners();
-      }, onError: (err) {
-        debugPrint('Firestore contacts stream error: $err');
-        _loadData();
-      });
-    } catch (e) {
-      debugPrint('Firestore initialization failed (Linux/Offline mode fallback): $e');
-      _loadData();
-    }
+      }
+    });
   }
 
-  @override
-  void dispose() {
-    _transactionsSub?.cancel();
-    _contactsSub?.cancel();
-    super.dispose();
-  }
-
-  Future<void> _loadData() async {
-    // 1. Load from local cache (Hive) for immediate UI response
+  Future<void> _loadData(String uid) async {
+    // 1. Instant Load from Hive
     _transactions = _transactionBox.values.toList()
       ..sort((a, b) => b.date.compareTo(a.date));
-    _contacts = _contactBox.values.toList();
     
-    if (_transactions.isEmpty && _contactBox.isEmpty) {
-      _loadDummyData();
-    }
+    _contacts = _contactBox.values.toList();
     notifyListeners();
+
+    // 2. Background Sync from Firestore
+    try {
+      final transSnapshot = await _firestore
+          .collection('users')
+          .doc(uid)
+          .collection('transactions')
+          .get();
+      
+      final cloudTransactions = transSnapshot.docs
+          .map((doc) => Transaction.fromMap(doc.data()))
+          .toList();
+
+      for (var cloudTrans in cloudTransactions) {
+        final localTrans = _transactionBox.get(cloudTrans.id);
+        
+        if (localTrans == null || cloudTrans.updatedAt.isAfter(localTrans.updatedAt)) {
+          await _transactionBox.put(cloudTrans.id, cloudTrans);
+        } else if (localTrans.updatedAt.isAfter(cloudTrans.updatedAt)) {
+          await _firestore
+              .collection('users')
+              .doc(uid)
+              .collection('transactions')
+              .doc(localTrans.id)
+              .set(localTrans.toMap());
+        }
+      }
+
+      final contactsSnapshot = await _firestore
+          .collection('users')
+          .doc(uid)
+          .collection('contacts')
+          .get();
+      
+      for (var doc in contactsSnapshot.docs) {
+        final cloudContact = Contact.fromMap(doc.data());
+        final localContact = _contactBox.get(cloudContact.name.toLowerCase());
+        if (localContact == null) {
+          await _contactBox.put(cloudContact.name.toLowerCase(), cloudContact);
+        }
+      }
+
+      await _pruneHiveCache();
+
+      _transactions = _transactionBox.values.toList()
+        ..sort((a, b) => b.date.compareTo(a.date));
+      _contacts = _contactBox.values.toList();
+      
+      if (_transactions.isEmpty && _contactBox.isEmpty) {
+        _loadDummyData();
+        await _saveAllToCloud(uid);
+      }
+
+      notifyListeners();
+    } catch (e) {
+      debugPrint('Sync Error: $e');
+    }
+  }
+
+  Future<void> _pruneHiveCache() async {
+    if (_transactionBox.length > 100) {
+      final allSorted = _transactionBox.values.toList()
+        ..sort((a, b) => b.date.compareTo(a.date));
+      
+      final toRemove = allSorted.skip(100).toList();
+      for (var t in toRemove) {
+        await _transactionBox.delete(t.id);
+      }
+    }
+  }
+
+  Future<void> _saveAllToCloud(String uid) async {
+    for (var t in _transactions) {
+      await _transactionBox.put(t.id, t);
+      await _firestore
+          .collection('users')
+          .doc(uid)
+          .collection('transactions')
+          .doc(t.id)
+          .set(t.toMap());
+    }
+    for (var c in _contacts) {
+      await _contactBox.put(c.name.toLowerCase(), c);
+      await _firestore
+          .collection('users')
+          .doc(uid)
+          .collection('contacts')
+          .doc(c.name.toLowerCase().replaceAll(' ', '_'))
+          .set(c.toMap());
+    }
   }
 
   void _loadDummyData() {
-    _transactions = [];
-    _contacts = [];
+    final now = DateTime.now();
+    _transactions = [
+      Transaction(
+        id: '1',
+        title: 'Clarissa Bates',
+        subtitle: 'Internet Payment',
+        amount: 120.24,
+        type: TransactionType.expense,
+        categoryId: 'internet',
+        date: now.subtract(const Duration(days: 1)),
+        avatarInitials: 'CB',
+        avatarColorValue: const Color(0xFF6C47FF).toARGB32(),
+        updatedAt: now,
+      ),
+      Transaction(
+        id: '2',
+        title: 'Ariana Marnika',
+        subtitle: 'Top Up Balance',
+        amount: 500.00,
+        type: TransactionType.income,
+        categoryId: 'topUp',
+        date: now.subtract(const Duration(days: 2)),
+        avatarInitials: 'AM',
+        avatarColorValue: const Color(0xFF26C6DA).toARGB32(),
+        updatedAt: now,
+      ),
+    ];
+
+    _contacts = [
+      Contact(name: 'Clarissa Bates', sub: 'Bank · 1176886610711', initials: 'CB', colorValue: const Color(0xFF6C47FF).toARGB32()),
+      Contact(name: 'Ariana Marnika', sub: 'Bank · 8866 4461 2311', initials: 'AM', colorValue: const Color(0xFF26C6DA).toARGB32()),
+    ];
   }
 
   PaymentCategory _getCategory(String id) {
@@ -307,52 +338,41 @@ class ExpenseProvider extends ChangeNotifier {
   }
 
   Future<void> addTransaction(Transaction transaction) async {
+    final user = _auth.currentUser;
+    if (user == null) return;
+
     try {
-      // Save locally first
       await _transactionBox.put(transaction.id, transaction);
-      if (!_transactions.any((t) => t.id == transaction.id)) {
-        _transactions.insert(0, transaction);
-      }
+      _transactions.insert(0, transaction);
+      await _pruneHiveCache();
       notifyListeners();
 
-      // Sync online to Firestore if logged in and Firebase is initialized
-      if (_currentUserEmail != null && Firebase.apps.isNotEmpty) {
-        try {
-          await FirebaseFirestore.instance
-              .collection('users')
-              .doc(_currentUserEmail)
-              .collection('transactions')
-              .doc(transaction.id)
-              .set(transaction.toMap());
-        } catch (e) {
-          debugPrint('Error syncing new transaction to Firestore: $e');
-        }
-      }
+      await _firestore
+          .collection('users')
+          .doc(user.uid)
+          .collection('transactions')
+          .doc(transaction.id)
+          .set(transaction.toMap());
     } catch (e) {
       debugPrint('Error adding transaction: $e');
     }
   }
 
   Future<void> deleteTransaction(String id) async {
+    final user = _auth.currentUser;
+    if (user == null) return;
+
     try {
-      // Delete locally
       await _transactionBox.delete(id);
+      await _firestore
+          .collection('users')
+          .doc(user.uid)
+          .collection('transactions')
+          .doc(id)
+          .delete();
+      
       _transactions.removeWhere((t) => t.id == id);
       notifyListeners();
-
-      // Sync delete to Firestore if logged in and Firebase is initialized
-      if (_currentUserEmail != null && Firebase.apps.isNotEmpty) {
-        try {
-          await FirebaseFirestore.instance
-              .collection('users')
-              .doc(_currentUserEmail)
-              .collection('transactions')
-              .doc(id)
-              .delete();
-        } catch (e) {
-          debugPrint('Error syncing deleted transaction to Firestore: $e');
-        }
-      }
     } catch (e) {
       debugPrint('Error deleting transaction: $e');
     }
@@ -386,6 +406,9 @@ class ExpenseProvider extends ChangeNotifier {
   }
 
   Future<void> saveContactIfNeeded(String name, String sub) async {
+    final user = _auth.currentUser;
+    if (user == null) return;
+
     final exists = _contacts.any((c) => c.name.toLowerCase() == name.toLowerCase());
     if (!exists) {
       final newContact = Contact(
@@ -398,21 +421,16 @@ class ExpenseProvider extends ChangeNotifier {
       try {
         await _contactBox.put(name.toLowerCase(), newContact);
         _contacts.add(newContact);
+        
+        final id = name.toLowerCase().replaceAll(' ', '_');
+        await _firestore
+            .collection('users')
+            .doc(user.uid)
+            .collection('contacts')
+            .doc(id)
+            .set(newContact.toMap());
+            
         notifyListeners();
-
-        // Sync to Firestore if logged in and Firebase is initialized
-        if (_currentUserEmail != null && Firebase.apps.isNotEmpty) {
-          try {
-            await FirebaseFirestore.instance
-                .collection('users')
-                .doc(_currentUserEmail)
-                .collection('contacts')
-                .doc(name.toLowerCase())
-                .set(newContact.toMap());
-          } catch (e) {
-            debugPrint('Error syncing contact to Firestore: $e');
-          }
-        }
       } catch (e) {
         debugPrint('Error saving contact: $e');
       }
